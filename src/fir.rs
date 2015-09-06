@@ -1,38 +1,72 @@
 use num::{Num, NumCast, Zero, Complex};
 use std::f64::consts::PI;
 
-pub trait SampleType: Num + Copy {
-    type AccType: Num + NumCast + Copy;
-    fn tap_sum() -> Self::AccType;
-    fn from_acc(x: Self::AccType) -> Self;
+pub trait SampleType: Copy {
+    type AccType: Zero + Copy;
+    type TapType: Num + NumCast + Copy;
+    fn tap_sum() -> Self::TapType;
+    fn from_acc(acc: Self::AccType) -> Self;
     fn to_acc(x: Self) -> Self::AccType;
+    fn tap_delay(tap: Self::TapType, delay: Self::AccType) -> Self::AccType;
+    fn scale_acc(acc: Self::AccType, gain: Self::TapType) -> Self;
 }
 
-// TODO: Again, wait for associated constants...
-impl SampleType for i16 {
-    type AccType = i32;
-    #[inline]
-    fn tap_sum() -> i32 { 32768 }
-    #[inline]
-    fn from_acc(x: i32) -> i16 { x as i16 }
-    #[inline]
-    fn to_acc(x: i16) -> i32 { x as i32 }
+macro_rules! impl_scalar_sampletype {
+    ($t:ty, $tt:ty, $tapsum:expr) => {
+        impl SampleType for $t {
+            type AccType = $tt;
+            type TapType = $tt;
+            #[inline] fn tap_sum() -> $tt { $tapsum }
+            #[inline] fn from_acc(acc: $tt) -> $t { acc as $t }
+            #[inline] fn to_acc(x: $t) -> $tt { x as $tt }
+            #[inline]
+            fn tap_delay(tap: $tt, delay: $tt) -> $tt { delay * tap }
+            #[inline]
+            fn scale_acc(acc: $tt, gain: $tt) -> $t { (acc / gain) as $t }
+        }
+    }
 }
-impl SampleType for f32 {
-    type AccType = f64;
-    #[inline]
-    fn tap_sum() -> f64 { 1.0 }
-    #[inline]
-    fn from_acc(x: f64) -> f32 { x as f32 }
-    #[inline]
-    fn to_acc(x: f32) -> f64 { x as f64 }
+
+macro_rules! impl_complex_sampletype {
+    ($t:ty, $tt:ty, $tapsum:expr) => {
+        impl SampleType for Complex<$t> {
+            type AccType = Complex<$tt>;
+            type TapType = $tt;
+            #[inline]
+            fn tap_sum() -> $tt { $tapsum }
+            #[inline]
+            fn from_acc(acc: Complex<$tt>) -> Complex<$t> {
+                Complex{ re: acc.re as $t, im: acc.im as $t }
+            }
+            #[inline]
+            fn to_acc(x: Complex<$t>) -> Complex<$tt> {
+                Complex{ re: x.re as $tt, im: x.im as $tt }
+            }
+            #[inline]
+            fn tap_delay(tap: $tt, delay: Complex<$tt>) -> Complex<$tt> {
+                delay.scale(tap)
+            }
+            #[inline]
+            fn scale_acc(acc: Complex<$tt>, gain: $tt) -> Complex<$t> {
+                SampleType::from_acc(acc.unscale(gain))
+            }
+        }
+    }
 }
-//impl SampleType for Complex<i16> { type AccType = i32; fn tap_sum() -> i32 { 32768 }}
-//impl SampleType for Complex<f32> { type AccType = f64; fn tap_sum() -> f64 { 1.0 }}
+
+macro_rules! impl_sampletype {
+    ($t:ty, $tt:ty, $tapsum:expr) => {
+        impl_scalar_sampletype!($t, $tt, $tapsum);
+        impl_complex_sampletype!($t, $tt, $tapsum);
+    }
+}
+
+impl_sampletype!(i16, i32, 32768);
+impl_sampletype!(f32, f64, 1.0);
 
 /// FIR filter with i16 taps and i32 registers and optional decimation.
 pub struct FIR<T: SampleType> {
-    taps: Vec<T::AccType>,
+    taps: Vec<T::TapType>,
     delay: Vec<T::AccType>,
     decimate: usize,
     delay_idx: isize
@@ -44,10 +78,10 @@ impl <T: SampleType> FIR<T> {
     /// Taps should sum to 32768 or close to it.
     ///
     /// Set decimate=1 for no decimation, decimate=2 for /2, etc.
-    pub fn new(taps: &Vec<T::AccType>, decimate: usize) -> FIR<T>
+    pub fn new(taps: &Vec<T::TapType>, decimate: usize) -> FIR<T>
     {
         assert!(taps.len() > 0);
-        let taps: Vec<T::AccType> = taps.iter().map(|t| *t as T::AccType).collect();
+        let taps: Vec<T::TapType> = taps.to_owned();
         let mut delay: Vec<T::AccType> = Vec::with_capacity(taps.len());
         for _ in 0..taps.len() {
             delay.push(T::AccType::zero());
@@ -64,7 +98,7 @@ impl <T: SampleType> FIR<T> {
         -> FIR<T>
     {
         let taps = firwin2(n_taps, gains);
-        let taps = quantise_taps::<T::AccType>(&taps, T::tap_sum());
+        let taps = quantise_taps::<T::TapType>(&taps, T::tap_sum());
         FIR::new(&taps, decimate)
     }
 
@@ -98,7 +132,7 @@ impl <T: SampleType> FIR<T> {
     }
 
     /// Return a reference to the filter's taps.
-    pub fn taps(&self) -> &Vec<T::AccType> {
+    pub fn taps(&self) -> &Vec<T::TapType> {
         &self.taps
     }
 
@@ -126,8 +160,8 @@ impl <T: SampleType> FIR<T> {
         let mut in_p = &x[0] as *const T;
         let ylen = y.len() as isize;
         let decimate = self.decimate as isize;
-        let tap0 = &self.taps[0] as *const T::AccType;
-        let gain: T::AccType = T::tap_sum();
+        let tap0 = &self.taps[0] as *const T::TapType;
+        let gain: T::TapType = T::tap_sum();
 
         // Process each actually generated output sample
         for k in 0..ylen {
@@ -151,7 +185,7 @@ impl <T: SampleType> FIR<T> {
             // First the index to the end of the buffer
             for idx in (delay_idx + 1)..delay_len {
                 unsafe {
-                    acc = acc + *tap_p * *delay_p.offset(idx);
+                    acc = acc + T::tap_delay(*tap_p, *delay_p.offset(idx));
                     tap_p = tap_p.offset(1);
                 }
             }
@@ -159,13 +193,13 @@ impl <T: SampleType> FIR<T> {
             // Then the start to the index of the buffer
             for idx in 0..(delay_idx + 1) {
                 unsafe {
-                    acc = acc + *tap_p * *delay_p.offset(idx);
+                    acc = acc + T::tap_delay(*tap_p, *delay_p.offset(idx));
                     tap_p = tap_p.offset(1);
                 }
             }
 
             // Save the result, accounting for filter gain
-            unsafe { *out_p.offset(k) = SampleType::from_acc(acc / gain) };
+            unsafe { *out_p.offset(k) = T::scale_acc(acc, gain) };
         }
 
         // Update index for next time
@@ -269,6 +303,55 @@ mod tests {
         let x: Vec<i16> = vec!{4, 0, 0, 0, 0, 0, 0};
         let y = fir.process(&x);
         assert_eq!(y, vec!{1, 2, 1, 0, 0, 0, 0});
+    }
+
+    #[test]
+    fn test_fir_impulse_f() {
+        let taps: Vec<f64> = vec!{0.25, 0.5, 0.25};
+        let mut fir = FIR::new(&taps, 1);
+        let x: Vec<f32> = vec!{1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        let y = fir.process(&x);
+        assert_eq!(y, vec!{0.25, 0.5, 0.25, 0.0, 0.0, 0.0, 0.0});
+    }
+
+    #[test]
+    fn test_fir_impulse_c() {
+        let taps: Vec<i32> = vec!{8192, 16384, 8192};
+        let mut fir = FIR::new(&taps, 1);
+        let x: Vec<Complex<i16>> = vec!{
+            Complex{re:4, im:-8},
+            Complex{re:0, im: 0},
+            Complex{re:0, im: 0},
+            Complex{re:0, im: 0},
+            Complex{re:0, im: 0},
+        };
+        let y = fir.process(&x);
+        assert_eq!(y, vec!{
+            Complex{re:1, im:-2},
+            Complex{re:2, im:-4},
+            Complex{re:1, im:-2},
+            Complex{re:0, im: 0},
+            Complex{re:0, im: 0}});
+    }
+
+    #[test]
+    fn test_fir_impulse_cf() {
+        let taps: Vec<f64> = vec!{0.25, 0.5, 0.25};
+        let mut fir = FIR::new(&taps, 1);
+        let x: Vec<Complex<f32>> = vec!{
+            Complex{re:1.0, im:-2.0},
+            Complex{re:0.0, im: 0.0},
+            Complex{re:0.0, im: 0.0},
+            Complex{re:0.0, im: 0.0},
+            Complex{re:0.0, im: 0.0},
+        };
+        let y = fir.process(&x);
+        assert_eq!(y, vec!{
+            Complex{re:0.25, im:-0.5},
+            Complex{re:0.50, im:-1.0},
+            Complex{re:0.25, im:-0.5},
+            Complex{re:0.00, im: 0.0},
+            Complex{re:0.00, im: 0.0}});
     }
 
     #[test]

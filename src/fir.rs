@@ -1,6 +1,16 @@
 use num::{Num, NumCast, Zero, Complex};
 use std::f64::consts::PI;
 
+/// Implement the underlying operations and types required by the FIR.
+///
+/// The FIR is a delay line of AccTypes that is tap_delay()'d by TapTypes,
+/// which should add up to tap_sum(), and the input SampleType may be
+/// to_acc()'d or from_acc()'d to transform it. Finally the output AccType is
+/// turned back into a SampleType scaled against the gain with scale_acc().
+///
+/// In general the AccType should be larger than the SampleType but compatible
+/// (i.e. you can add a SampleType to an AccType), while the TapType should
+/// always be scalar and is usually the same size as the AccType.
 pub trait SampleType: Copy {
     type AccType: Zero + Copy;
     type TapType: Num + NumCast + Copy;
@@ -11,6 +21,7 @@ pub trait SampleType: Copy {
     fn scale_acc(acc: Self::AccType, gain: Self::TapType) -> Self;
 }
 
+/// Implement SampleType for a scalar type such as i16 or f32.
 macro_rules! impl_scalar_sampletype {
     ($t:ty, $tt:ty, $tapsum:expr) => {
         impl SampleType for $t {
@@ -27,6 +38,10 @@ macro_rules! impl_scalar_sampletype {
     }
 }
 
+/// Implement SampleType for a Complex type such as Complex<i16>.
+/// TODO: This is not as efficient as it might be -
+/// it's 30% as fast as scalars, but you might hope it could be 50% as fast.
+/// Suspicion lies on creating new Complex objects.
 macro_rules! impl_complex_sampletype {
     ($t:ty, $tt:ty, $tapsum:expr) => {
         impl SampleType for Complex<$t> {
@@ -44,16 +59,17 @@ macro_rules! impl_complex_sampletype {
             }
             #[inline]
             fn tap_delay(tap: $tt, delay: Complex<$tt>) -> Complex<$tt> {
-                delay.scale(tap)
+                Complex{ re: delay.re * tap, im: delay.im * tap }
             }
             #[inline]
             fn scale_acc(acc: Complex<$tt>, gain: $tt) -> Complex<$t> {
-                SampleType::from_acc(acc.unscale(gain))
+                Complex{ re: (acc.re / gain) as $t, im: (acc.im / gain) as $t }
             }
         }
     }
 }
 
+/// Implement Scalar and Complex SampleTypes for the same underlying types.
 macro_rules! impl_sampletype {
     ($t:ty, $tt:ty, $tapsum:expr) => {
         impl_scalar_sampletype!($t, $tt, $tapsum);
@@ -61,10 +77,12 @@ macro_rules! impl_sampletype {
     }
 }
 
-impl_sampletype!(i16, i32, 32768);
+impl_sampletype!(i8,  i16, 1<<7 );
+impl_sampletype!(i16, i32, 1<<15);
+impl_sampletype!(i32, i64, 1<<31);
 impl_sampletype!(f32, f64, 1.0);
 
-/// FIR filter with i16 taps and i32 registers and optional decimation.
+/// FIR filter.
 pub struct FIR<T: SampleType> {
     taps: Vec<T::TapType>,
     delay: Vec<T::AccType>,
@@ -75,7 +93,7 @@ pub struct FIR<T: SampleType> {
 impl <T: SampleType> FIR<T> {
     /// Create a new FIR with the given taps and decimation.
     ///
-    /// Taps should sum to 32768 or close to it.
+    /// Taps should sum to T::tap_sum() or close to it.
     ///
     /// Set decimate=1 for no decimation, decimate=2 for /2, etc.
     pub fn new(taps: &Vec<T::TapType>, decimate: usize) -> FIR<T>

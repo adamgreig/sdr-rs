@@ -1,28 +1,56 @@
-use num::Complex;
+use num::{Num, NumCast, Zero, Complex};
 use std::f64::consts::PI;
 
+pub trait SampleType: Num + Copy {
+    type AccType: Num + NumCast + Copy;
+    fn tap_sum() -> Self::AccType;
+    fn from_acc(x: Self::AccType) -> Self;
+    fn to_acc(x: Self) -> Self::AccType;
+}
+
+// TODO: Again, wait for associated constants...
+impl SampleType for i16 {
+    type AccType = i32;
+    #[inline]
+    fn tap_sum() -> i32 { 32768 }
+    #[inline]
+    fn from_acc(x: i32) -> i16 { x as i16 }
+    #[inline]
+    fn to_acc(x: i16) -> i32 { x as i32 }
+}
+impl SampleType for f32 {
+    type AccType = f64;
+    #[inline]
+    fn tap_sum() -> f64 { 1.0 }
+    #[inline]
+    fn from_acc(x: f64) -> f32 { x as f32 }
+    #[inline]
+    fn to_acc(x: f32) -> f64 { x as f64 }
+}
+//impl SampleType for Complex<i16> { type AccType = i32; fn tap_sum() -> i32 { 32768 }}
+//impl SampleType for Complex<f32> { type AccType = f64; fn tap_sum() -> f64 { 1.0 }}
+
 /// FIR filter with i16 taps and i32 registers and optional decimation.
-pub struct FIR {
-    taps: Vec<i32>,
-    delay: Vec<i32>,
+pub struct FIR<T: SampleType> {
+    taps: Vec<T::AccType>,
+    delay: Vec<T::AccType>,
     decimate: usize,
     delay_idx: isize
 }
 
-impl FIR {
+impl <T: SampleType> FIR<T> {
     /// Create a new FIR with the given taps and decimation.
     ///
     /// Taps should sum to 32768 or close to it.
     ///
     /// Set decimate=1 for no decimation, decimate=2 for /2, etc.
-    pub fn new(taps: &Vec<i16>, decimate: usize)
-        -> FIR
+    pub fn new(taps: &Vec<T::AccType>, decimate: usize) -> FIR<T>
     {
         assert!(taps.len() > 0);
-        let taps: Vec<i32> = taps.iter().map(|t| *t as i32).collect();
-        let mut delay: Vec<i32> = Vec::with_capacity(taps.len());
+        let taps: Vec<T::AccType> = taps.iter().map(|t| *t as T::AccType).collect();
+        let mut delay: Vec<T::AccType> = Vec::with_capacity(taps.len());
         for _ in 0..taps.len() {
-            delay.push(0i32);
+            delay.push(T::AccType::zero());
         }
         FIR { taps: taps, delay: delay,
               decimate: decimate, delay_idx: 0isize }
@@ -33,9 +61,11 @@ impl FIR {
     ///
     /// Set decimate=1 for no decimation, decimate=2 for /2, etc.
     pub fn from_gains(n_taps: usize, gains: &Vec<f64>, decimate: usize)
-        -> FIR
+        -> FIR<T>
     {
-        FIR::new(&quantise_taps_i16(&firwin2(n_taps, gains)), decimate)
+        let taps = firwin2(n_taps, gains);
+        let taps = quantise_taps::<T::AccType>(&taps, T::tap_sum());
+        FIR::new(&taps, decimate)
     }
 
     /// Create a new FIR that compensates for a CIC filter specified by
@@ -47,7 +77,7 @@ impl FIR {
     /// TODO: Does not quite match results obtained in Python, with slightly
     /// worse simulated performance. Investigate.
     pub fn cic_compensator(n_taps: usize, q: usize, r: usize, decimate: usize)
-        -> FIR 
+        -> FIR<T>
     {
         assert!(decimate > 0);
         let q = q as i32;
@@ -68,13 +98,13 @@ impl FIR {
     }
 
     /// Return a reference to the filter's taps.
-    pub fn taps(&self) -> &Vec<i32> {
+    pub fn taps(&self) -> &Vec<T::AccType> {
         &self.taps
     }
 
     /// Process a block of data x, outputting the filtered and possibly
     /// decimated data.
-    pub fn process(&mut self, x: &Vec<i16>) -> Vec<i16> {
+    pub fn process(&mut self, x: &Vec<T>) -> Vec<T> {
         // Check we were initialised correctly and
         // ensure invariances required for unsafe code.
         assert!(self.taps.len() > 0);
@@ -85,18 +115,19 @@ impl FIR {
         assert_eq!(x.len() % self.decimate, 0);
 
         // Allocate output
-        let mut y: Vec<i16> = Vec::with_capacity(x.len() / self.decimate);
+        let mut y: Vec<T> = Vec::with_capacity(x.len() / self.decimate);
         unsafe { y.set_len(x.len() / self.decimate) };
 
         // Grab pointers to various things
         let mut delay_idx = self.delay_idx;
         let delay_len = self.delay.len() as isize;
-        let delay_p = &mut self.delay[0] as *mut i32;
-        let out_p = &mut y[0] as *mut i16;
-        let mut in_p = &x[0] as *const i16;
+        let delay_p = &mut self.delay[0] as *mut T::AccType;
+        let out_p = &mut y[0] as *mut T;
+        let mut in_p = &x[0] as *const T;
         let ylen = y.len() as isize;
         let decimate = self.decimate as isize;
-        let tap0 = &self.taps[0] as *const i32;
+        let tap0 = &self.taps[0] as *const T::AccType;
+        let gain: T::AccType = T::tap_sum();
 
         // Process each actually generated output sample
         for k in 0..ylen {
@@ -104,7 +135,7 @@ impl FIR {
             // Feed the delay line, fast-forwarding through the skipped samples
             for _ in 0..decimate {
                 unsafe {
-                    *delay_p.offset(delay_idx) = *in_p as i32;
+                    *delay_p.offset(delay_idx) = SampleType::to_acc(*in_p);
                     in_p = in_p.offset(1);
                     delay_idx -= 1;
                     if delay_idx == -1 {
@@ -114,13 +145,13 @@ impl FIR {
             }
 
             // Compute the multiply-accumulate for actual samples.
-            let mut acc: i32 = 0;
+            let mut acc: T::AccType = T::AccType::zero();
             let mut tap_p = tap0;
 
             // First the index to the end of the buffer
             for idx in (delay_idx + 1)..delay_len {
                 unsafe {
-                    acc += *tap_p * *delay_p.offset(idx);
+                    acc = acc + *tap_p * *delay_p.offset(idx);
                     tap_p = tap_p.offset(1);
                 }
             }
@@ -128,13 +159,13 @@ impl FIR {
             // Then the start to the index of the buffer
             for idx in 0..(delay_idx + 1) {
                 unsafe {
-                    acc += *tap_p * *delay_p.offset(idx);
+                    acc = acc + *tap_p * *delay_p.offset(idx);
                     tap_p = tap_p.offset(1);
                 }
             }
 
             // Save the result, accounting for filter gain
-            unsafe { *out_p.offset(k) = (acc >> 15) as i16 };
+            unsafe { *out_p.offset(k) = SampleType::from_acc(acc / gain) };
         }
 
         // Update index for next time
@@ -175,10 +206,11 @@ pub fn firwin2(n_taps: usize, gains: &Vec<f64>) -> Vec<f64> {
     taps.iter().zip(w.iter()).map(|(t, w)| t * w).collect()
 }
 
-/// Quantise FIR taps to i16 taps that sum to 32768
-pub fn quantise_taps_i16(taps: &Vec<f64>) -> Vec<i16> {
+/// Quantise FIR taps to i16 taps that sum to `total`
+pub fn quantise_taps<T: Num + NumCast>(taps: &Vec<f64>, total: T) -> Vec<T> {
     let sum: f64 = taps.iter().fold(0.0_f64, |acc, &x| acc + x);
-    taps.iter().map(|t| (t * 32768.0_f64 / sum) as i16).collect()
+    let total: f64 = <f64 as NumCast>::from(total).unwrap();
+    taps.iter().map(|t| <T as NumCast>::from(t * total / sum).unwrap()).collect()
 }
 
 /// Compute the Hamming window over n samples
@@ -228,11 +260,11 @@ fn irdft(x: &Vec<Complex<f64>>) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use num::Complex;
-    use super::{FIR, firwin2, quantise_taps_i16, hamming, dft, idft, irdft};
+    use super::{FIR, firwin2, quantise_taps, hamming, dft, idft, irdft};
 
     #[test]
     fn test_fir_impulse() {
-        let taps: Vec<i16> = vec!{8192, 16384, 8192};
+        let taps: Vec<i32> = vec!{8192, 16384, 8192};
         let mut fir = FIR::new(&taps, 1);
         let x: Vec<i16> = vec!{4, 0, 0, 0, 0, 0, 0};
         let y = fir.process(&x);
@@ -241,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_fir_decimate() {
-        let taps: Vec<i16> = vec!{8192, 8192, 8192, 8192};
+        let taps: Vec<i32> = vec!{8192, 8192, 8192, 8192};
         let mut fir = FIR::new(&taps, 2);
         let x: Vec<i16> = vec!{4, 4, 4, 4, 8, 8, 8, 8};
         let y = fir.process(&x);
@@ -250,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_fir_continuity() {
-        let taps: Vec<i16> = vec!{8192, 16384, 8192};
+        let taps: Vec<i32> = vec!{8192, 16384, 8192};
         let mut fir = FIR::new(&taps, 1);
         let x: Vec<i16> = vec!{4, 0};
         let y = fir.process(&x);
@@ -262,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_fir_compensate() {
-        let fir = FIR::cic_compensator(63, 5, 8, 2);
+        let fir = FIR::<i16>::cic_compensator(63, 5, 8, 2);
         let taps = fir.taps();
         assert_eq!(*taps, vec!{
             -4, -43, -9, 53, 33, -66, -74, 72, 138, -54, -221, -3, 313, 118,
@@ -294,9 +326,9 @@ mod tests {
     }
 
     #[test]
-    fn test_quantise_taps_i16() {
+    fn test_quantise_taps() {
         let taps = vec!{0.25, 0.5, 0.25};
-        assert_eq!(quantise_taps_i16(&taps), vec!{8192, 16384, 8192});
+        assert_eq!(quantise_taps(&taps, 32768), vec!{8192, 16384, 8192});
     }
 
     #[test]

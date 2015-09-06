@@ -1,6 +1,6 @@
 extern crate time;
 extern crate sdr;
-use sdr::fir::FIR;
+use sdr::FIR;
 use sdr::IQ;
 
 #[cfg_attr(test, allow(dead_code))]

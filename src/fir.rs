@@ -22,6 +22,7 @@ pub trait SampleType: Copy {
 }
 
 /// Implement SampleType for a scalar type such as i16 or f32.
+/// $t is the sample type, $tt the acc/tap type and $tapsum the filter gain.
 macro_rules! impl_scalar_sampletype {
     ($t:ty, $tt:ty, $tapsum:expr) => {
         impl SampleType for $t {
@@ -39,6 +40,7 @@ macro_rules! impl_scalar_sampletype {
 }
 
 /// Implement SampleType for a Complex type such as Complex<i16>.
+/// $t is the sample type, $tt the acc/tap type and $tapsum the filter gain.
 /// TODO: This is not as efficient as it might be -
 /// it's 30% as fast as scalars, but you might hope it could be 50% as fast.
 /// Suspicion lies on creating new Complex objects.

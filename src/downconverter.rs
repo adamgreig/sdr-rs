@@ -5,8 +5,8 @@ use fir::FIR;
 
 pub struct Downconverter {
     n_cics: usize,
-    i_cics: Vec<CIC>,
-    q_cics: Vec<CIC>,
+    i_cics: Vec<CIC<i16>>,
+    q_cics: Vec<CIC<i16>>,
     i_firs: Vec<FIR<i16>>,
     q_firs: Vec<FIR<i16>>,
 }
@@ -15,13 +15,13 @@ impl Downconverter {
     /// Create a new downconverter that has n CIC filters,
     /// each decimates by 16 (/8 from the CIC and /2 from subsequent FIR).
     pub fn new(n_cics: usize) -> Downconverter {
-        let mut i_cics: Vec<CIC> = Vec::with_capacity(n_cics);
-        let mut q_cics: Vec<CIC> = Vec::with_capacity(n_cics);
+        let mut i_cics: Vec<CIC<i16>> = Vec::with_capacity(n_cics);
+        let mut q_cics: Vec<CIC<i16>> = Vec::with_capacity(n_cics);
         let mut i_firs: Vec<FIR<i16>> = Vec::with_capacity(n_cics);
         let mut q_firs: Vec<FIR<i16>> = Vec::with_capacity(n_cics);
         for _ in 0..n_cics {
-            i_cics.push(CIC::new(5, 8));
-            q_cics.push(CIC::new(5, 8));
+            i_cics.push(CIC::new(5, 8, 12));
+            q_cics.push(CIC::new(5, 8, 12));
             i_firs.push(FIR::cic_compensator(64, 5, 8, 2));
             q_firs.push(FIR::cic_compensator(64, 5, 8, 2));
         }

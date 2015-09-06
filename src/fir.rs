@@ -3,22 +3,23 @@ use std::f64::consts::PI;
 
 /// Implement the underlying operations and types required by the FIR.
 ///
-/// The FIR is a delay line of AccTypes that is tap_delay()'d by TapTypes,
-/// which should add up to tap_sum(), and the input SampleType may be
-/// to_acc()'d or from_acc()'d to transform it. Finally the output AccType is
-/// turned back into a SampleType scaled against the gain with scale_acc().
-///
 /// In general the AccType should be larger than the SampleType but compatible
 /// (i.e. you can add a SampleType to an AccType), while the TapType should
 /// always be scalar and is usually the same size as the AccType.
+///
+/// tap_sum() specifies the gain of the filter, i.e. the sum of all the taps.
+/// input() copies an item from the input into a given delay line element.
+/// accumulate() updates an accumulator with a delay line element * a tap.
+/// output() writes to the output array from an accumulator.
 pub trait SampleType: Copy {
     type AccType: Zero + Copy;
     type TapType: Num + NumCast + Copy;
     fn tap_sum() -> Self::TapType;
-    fn from_acc(acc: Self::AccType) -> Self;
-    fn to_acc(x: Self) -> Self::AccType;
-    fn tap_delay(tap: Self::TapType, delay: Self::AccType) -> Self::AccType;
-    fn scale_acc(acc: Self::AccType, gain: Self::TapType) -> Self;
+    unsafe fn input(x: *const Self, delay: *mut Self::AccType);
+    unsafe fn accumulate(acc: &mut Self::AccType, delay: *const Self::AccType,
+                         tap: *const Self::TapType);
+    unsafe fn output(acc: &Self::AccType, out: *mut Self,
+                     gain: &Self::TapType);
 }
 
 /// Implement SampleType for a scalar type such as i16 or f32.
@@ -28,44 +29,58 @@ macro_rules! impl_scalar_sampletype {
         impl SampleType for $t {
             type AccType = $tt;
             type TapType = $tt;
-            #[inline] fn tap_sum() -> $tt { $tapsum }
-            #[inline] fn from_acc(acc: $tt) -> $t { acc as $t }
-            #[inline] fn to_acc(x: $t) -> $tt { x as $tt }
+            
             #[inline]
-            fn tap_delay(tap: $tt, delay: $tt) -> $tt { delay * tap }
+            fn tap_sum() -> $tt { $tapsum }
+            
             #[inline]
-            fn scale_acc(acc: $tt, gain: $tt) -> $t { (acc / gain) as $t }
+            unsafe fn input(x: *const $t, delay: *mut $tt) {
+                *delay = *x as $tt;
+            }
+
+            #[inline]
+            unsafe fn accumulate(acc: &mut $tt, delay: *const $tt,
+                                 tap: *const $tt) {
+                *acc += *delay * *tap;
+            }
+
+            #[inline]
+            unsafe fn output(acc: &$tt, out: *mut $t, gain: &$tt) {
+                *out = (*acc / *gain) as $t;
+            }
         }
     }
 }
 
 /// Implement SampleType for a Complex type such as Complex<i16>.
 /// $t is the sample type, $tt the acc/tap type and $tapsum the filter gain.
-/// TODO: This is not as efficient as it might be -
-/// it's 30% as fast as scalars, but you might hope it could be 50% as fast.
-/// Suspicion lies on creating new Complex objects.
 macro_rules! impl_complex_sampletype {
     ($t:ty, $tt:ty, $tapsum:expr) => {
         impl SampleType for Complex<$t> {
             type AccType = Complex<$tt>;
             type TapType = $tt;
+
             #[inline]
             fn tap_sum() -> $tt { $tapsum }
+
             #[inline]
-            fn from_acc(acc: Complex<$tt>) -> Complex<$t> {
-                Complex{ re: acc.re as $t, im: acc.im as $t }
+            unsafe fn input(x: *const Complex<$t>, delay: *mut Complex<$tt>) {
+                (*delay).re = (*x).re as $tt;
+                (*delay).im = (*x).im as $tt;
             }
+
             #[inline]
-            fn to_acc(x: Complex<$t>) -> Complex<$tt> {
-                Complex{ re: x.re as $tt, im: x.im as $tt }
+            unsafe fn accumulate(acc: &mut Complex<$tt>,
+                                 delay: *const Complex<$tt>, tap: *const $tt) {
+                (*acc).re += (*delay).re * *tap;
+                (*acc).im += (*delay).im * *tap;
             }
+
             #[inline]
-            fn tap_delay(tap: $tt, delay: Complex<$tt>) -> Complex<$tt> {
-                Complex{ re: delay.re * tap, im: delay.im * tap }
-            }
-            #[inline]
-            fn scale_acc(acc: Complex<$tt>, gain: $tt) -> Complex<$t> {
-                Complex{ re: (acc.re / gain) as $t, im: (acc.im / gain) as $t }
+            unsafe fn output(acc: &Complex<$tt>, out: *mut Complex<$t>,
+                             gain: &$tt) {
+                (*out).re = ((*acc).re / *gain) as $t;
+                (*out).im = ((*acc).re / *gain) as $t;
             }
         }
     }
@@ -189,7 +204,8 @@ impl <T: SampleType> FIR<T> {
             // Feed the delay line, fast-forwarding through the skipped samples
             for _ in 0..decimate {
                 unsafe {
-                    *delay_p.offset(delay_idx) = SampleType::to_acc(*in_p);
+                    //*delay_p.offset(delay_idx) = SampleType::to_acc(*in_p);
+                    T::input(in_p, delay_p.offset(delay_idx));
                     in_p = in_p.offset(1);
                     delay_idx -= 1;
                     if delay_idx == -1 {
@@ -205,7 +221,8 @@ impl <T: SampleType> FIR<T> {
             // First the index to the end of the buffer
             for idx in (delay_idx + 1)..delay_len {
                 unsafe {
-                    acc = acc + T::tap_delay(*tap_p, *delay_p.offset(idx));
+                    //acc = acc + T::tap_delay(*tap_p, *delay_p.offset(idx));
+                    T::accumulate(&mut acc, delay_p.offset(idx), tap_p);
                     tap_p = tap_p.offset(1);
                 }
             }
@@ -213,13 +230,15 @@ impl <T: SampleType> FIR<T> {
             // Then the start to the index of the buffer
             for idx in 0..(delay_idx + 1) {
                 unsafe {
-                    acc = acc + T::tap_delay(*tap_p, *delay_p.offset(idx));
+                    //acc = acc + T::tap_delay(*tap_p, *delay_p.offset(idx));
+                    T::accumulate(&mut acc, delay_p.offset(idx), tap_p);
                     tap_p = tap_p.offset(1);
                 }
             }
 
             // Save the result, accounting for filter gain
-            unsafe { *out_p.offset(k) = T::scale_acc(acc, gain) };
+            //unsafe { *out_p.offset(k) = T::scale_acc(acc, gain) };
+            unsafe { T::output(&acc, out_p.offset(k), &gain); }
         }
 
         // Update index for next time

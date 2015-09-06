@@ -80,7 +80,7 @@ macro_rules! impl_complex_sampletype {
             unsafe fn output(acc: &Complex<$tt>, out: *mut Complex<$t>,
                              gain: &$tt) {
                 (*out).re = ((*acc).re / *gain) as $t;
-                (*out).im = ((*acc).re / *gain) as $t;
+                (*out).im = ((*acc).im / *gain) as $t;
             }
         }
     }

@@ -11,4 +11,6 @@ license = "MIT"
 
 [dependencies]
 num = "*"
+
+[dev-dependencies]
 time = "*"

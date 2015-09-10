@@ -192,6 +192,35 @@ impl <T: SampleType> FIR<T> {
         FIR::from_gains(n_taps, &h, decimate, 1) 
     }
 
+    /// Create a new FIR that implements a specified raised cosine filter,
+    /// with rolloff factor b, reciprocal symbol rate t in normalised time
+    /// (i.e. samples per symbol), and half-width w (in bit periods, i.e. how
+    /// many periods of t to extend either side of centre).
+    pub fn from_rcf(b: f64, t: usize, w: usize) -> FIR<T> {
+        assert!(b >= 0.0_f64 && b <= 1.0_f64);
+        let t = t as isize;
+        let w = w as isize;
+        let n_taps = 2 * t * w + 1;
+        let mut taps: Vec<f64> = Vec::with_capacity(n_taps as usize);
+        for i in (-t*w)..(t*w + 1) {
+            let x = i as f64 / t as f64;
+            let mut y: f64;
+
+            if i == 0 {
+                y = 1.0;
+            } else if i % t == 0 {
+                y = 0.0;
+            } else {
+                y = (PI * x).sin() / (PI * x);
+                y *= (PI * b * x).cos();
+                y /= 1.0 - (4.0 * b*b * x*x);
+            }
+            taps.push(y);
+        }
+        let taps = quantise_taps::<T::TapType>(&taps, T::gain(1));
+        FIR::new(&taps, 1, 1)
+    }
+
     /// Return a reference to the filter's taps.
     pub fn taps(&self) -> &Vec<T::TapType> {
         &self.taps
@@ -486,6 +515,15 @@ mod tests {
             -1379, 2428, 1591, -1214, -1464, 473, 1206, -20, -906, -230, 615,
             338, -366, -347, 176, 297, -48, -222, -23, 147, 53, -85, -56, 42,
             49, -17, -42, 2});
+    }
+
+    #[test]
+    fn test_fir_rcf() {
+        let fir = FIR::<i16>::from_rcf(0.5, 5, 3);
+        let taps = fir.taps();
+        assert_eq!(*taps, vec!{0i32, 19, 78, 140, 138, 0, -290, -644, -870,
+            -719, 0, 1319, 3045, 4790, 6090, 6571, 6090, 4790, 3045, 1319, 0,
+            -719, -870, -644, -290, 0, 138, 140, 78, 19, 0});
     }
 
     #[test]

@@ -9,7 +9,7 @@ impl SampleType for i32 {}
 impl SampleType for f32 {}
 impl SampleType for f64 {}
 
-pub fn fm_demod<T: SampleType>(x: Vec<IQ<T>>) -> Vec<T> {
+pub fn fm_demod<T: SampleType>(x: &Vec<IQ<T>>) -> Vec<T> {
     let n = x.len();
     let mut d: [IQ<T>; 3] = [IQ::new(T::zero(), T::zero()); 3];
     let mut out: Vec<T> = Vec::with_capacity(n);
@@ -69,7 +69,7 @@ fn test_fm_demod() {
             (0.4*(t as f32)).sin()
         ));
     }
-    let y = fm_demod(x);
+    let y = fm_demod(&x);
     let z: Vec<i32> = y.iter().map(|y| (y * 10.0) as i32).collect();
     assert_eq!(z, vec!{
         0, 0,

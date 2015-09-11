@@ -19,8 +19,7 @@ pub trait SampleType: Copy {
     unsafe fn input(x: *const Self, delay: *mut Self::AccType);
     unsafe fn accumulate(acc: &mut Self::AccType, delay: *const Self::AccType,
                          tap: *const Self::TapType);
-    unsafe fn output(acc: &Self::AccType, out: *mut Self,
-                     gain: &Self::TapType);
+    unsafe fn output(acc: Self::AccType, out: *mut Self, gain: Self::TapType);
 }
 
 /// Implement SampleType for a scalar type such as i16 or f32.
@@ -32,7 +31,7 @@ macro_rules! impl_scalar_sampletype {
             type TapType = $tt;
             
             #[inline]
-            fn gain(interpolate: usize) -> $tt { $tapsum / interpolate as $tt}
+            fn gain(interpolate: usize) -> $tt { $tapsum / interpolate as $tt }
             
             #[inline]
             unsafe fn input(x: *const $t, delay: *mut $tt) {
@@ -46,8 +45,8 @@ macro_rules! impl_scalar_sampletype {
             }
 
             #[inline]
-            unsafe fn output(acc: &$tt, out: *mut $t, gain: &$tt) {
-                *out = (*acc / *gain) as $t;
+            unsafe fn output(acc: $tt, out: *mut $t, gain: $tt) {
+                *out = (acc / gain) as $t
             }
         }
     }
@@ -62,7 +61,7 @@ macro_rules! impl_complex_sampletype {
             type TapType = $tt;
 
             #[inline]
-            fn gain(interpolate: usize) -> $tt { $tapsum / interpolate as $tt}
+            fn gain(interpolate: usize) -> $tt { $tapsum / interpolate as $tt }
 
             #[inline]
             unsafe fn input(x: *const Complex<$t>, delay: *mut Complex<$tt>) {
@@ -78,10 +77,10 @@ macro_rules! impl_complex_sampletype {
             }
 
             #[inline]
-            unsafe fn output(acc: &Complex<$tt>, out: *mut Complex<$t>,
-                             gain: &$tt) {
-                (*out).re = ((*acc).re / *gain) as $t;
-                (*out).im = ((*acc).im / *gain) as $t;
+            unsafe fn output(acc: Complex<$tt>, out: *mut Complex<$t>,
+                             gain: $tt) {
+                (*out).re = (acc.re / gain) as $t;
+                (*out).im = (acc.im / gain) as $t;
             }
         }
     }
@@ -126,8 +125,6 @@ impl <T: SampleType> FIR<T> {
         -> FIR<T>
     {
         assert!(taps.len() > 0);
-        assert!(decimate > 0);
-        assert!(interpolate > 0);
 
         // Copy the taps and zero-pad to get a multiple of interpolation ratio
         let mut taps: Vec<T::TapType> = taps.to_owned();
@@ -159,7 +156,7 @@ impl <T: SampleType> FIR<T> {
         -> FIR<T>
     {
         let taps = firwin2(n_taps, gains);
-        let taps = quantise_taps::<T::TapType>(&taps, T::gain(interpolate));
+        let taps = quantise_taps::<T::TapType>(&taps, T::gain(1));
         FIR::new(&taps, decimate, interpolate)
     }
 
@@ -174,7 +171,6 @@ impl <T: SampleType> FIR<T> {
     pub fn cic_compensator(n_taps: usize, q: usize, r: usize, decimate: usize)
         -> FIR<T>
     {
-        assert!(decimate > 0);
         let q = q as i32;
         let r = r as f64;
         let f: Vec<f64> = (0..512).map(|x|
@@ -221,6 +217,23 @@ impl <T: SampleType> FIR<T> {
         FIR::new(&taps, 1, 1)
     }
 
+    /// Create a new FIR resampler, with frequency response suitable for the
+    /// resampling ratio. n_taps should ideally be a multiple of interpolate
+    /// (but will be zero-padded at the end if not).
+    pub fn resampler(n_taps: usize, decimate: usize, interpolate: usize)
+        -> FIR<T>
+    {
+        let fc = 512 / ::std::cmp::max(decimate, interpolate);
+        let mut gains: Vec<f64> = Vec::with_capacity(512);
+        for _ in 0..fc {
+            gains.push(1.0);
+        }
+        for _ in fc..512 {
+            gains.push(0.0);
+        }
+        FIR::from_gains(n_taps, &gains, decimate, interpolate)
+    }
+
     /// Return a reference to the filter's taps.
     pub fn taps(&self) -> &Vec<T::TapType> {
         &self.taps
@@ -231,10 +244,6 @@ impl <T: SampleType> FIR<T> {
     pub fn process(&mut self, x: &Vec<T>) -> Vec<T> {
         // Check we were initialised correctly and
         // ensure invariances required for unsafe code.
-        assert!(self.decimate > 0);
-        assert!(self.interpolate > 0);
-        assert!(self.delay.len() > self.decimate);
-        assert!(self.taps.len() > self.interpolate);
         assert!(self.taps.len() % self.interpolate == 0);
         assert!(self.delay.len() == self.taps.len() / self.interpolate);
         assert!(self.delay_idx < self.delay.len() as isize);
@@ -308,7 +317,7 @@ impl <T: SampleType> FIR<T> {
             }
 
             // Save the result, accounting for filter gain
-            unsafe { T::output(&acc, out_p.offset(k), &gain); }
+            unsafe { T::output(acc, out_p.offset(k), gain); }
         }
 
         // Update index for next time
@@ -524,6 +533,15 @@ mod tests {
         assert_eq!(*taps, vec!{0i32, 19, 78, 140, 138, 0, -290, -644, -870,
             -719, 0, 1319, 3045, 4790, 6090, 6571, 6090, 4790, 3045, 1319, 0,
             -719, -870, -644, -290, 0, 138, 140, 78, 19, 0});
+    }
+
+    #[test]
+    fn test_fir_resampler() {
+        let mut fir = FIR::<i16>::resampler(20, 2, 3);
+        let x = vec!{5, 10, 15, 20, 25, 30, 35, 40, 40, 40, 40, 40};
+        let y = fir.process(&x);
+        assert_eq!(y, vec!{
+            0, 0, 0, 0, 4, 7, 10, 14, 17, 20, 24, 27, 30, 34, 38, 40, 40, 39});
     }
 
     #[test]

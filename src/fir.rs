@@ -255,14 +255,11 @@ impl <T: SampleType> FIR<T> {
             return vec!{};
         }
 
-        println!("\nEntering process(), delay_idx={} tap_idx={} leftover={}", self.delay_idx, self.tap_idx, self.leftover);
-
         // Allocate output.
         let ylen: usize = ((x.len() * self.interpolate) + self.leftover) /
                           self.decimate;
         let mut y: Vec<T> = Vec::with_capacity(ylen);
         unsafe { y.set_len(ylen) };
-        println!("Allocated {} for y", ylen);
 
         // y might be 0-length, so can't just grab &y[0].
         // Instead do this palaver. out_p from the `else` branch won't be used.
@@ -296,12 +293,9 @@ impl <T: SampleType> FIR<T> {
             // coefficient commutators by one, and when they wrap around,
             // insert a new input into the delay line and advance that by one.
             // Repeat until a sample we're not going to skip outputting.
-            println!("About to enter tick loop, tickstart={}", tickstart);
             for tick in tickstart..decimate {
                 // Only start from self.leftover the very first time.
                 tickstart = 0;
-
-                println!("[tick={}] Main loop, tap_idx={}", tick, tap_idx);
 
                 // Advance coefficient commutators.
                 // Note that the initialised value for tap_idx is
@@ -312,14 +306,12 @@ impl <T: SampleType> FIR<T> {
                     tap_idx = 0;
 
                     if in_p == in_end {
-                        println!("    Hit last entry, quitting.");
                         tap_idx = interpolate - 1;
                         self.leftover = tick as usize;
                         break 'outputs;
                     }
 
                     // Insert input sample
-                    println!("      Inserting value in main loop");
                     unsafe {
                         T::input(in_p, delay_p.offset(delay_idx));
                         in_p = in_p.offset(1);
@@ -356,7 +348,6 @@ impl <T: SampleType> FIR<T> {
 
             // Save the result, accounting for filter gain
             unsafe {
-                println!("    Saving output");
                 T::output(acc, out_p, gain);
                 out_p = out_p.offset(1);
             }
@@ -365,8 +356,6 @@ impl <T: SampleType> FIR<T> {
         // Save indices for next time
         self.delay_idx = delay_idx;
         self.tap_idx = tap_idx;
-
-        println!("Leaving process(), delay_idx={} tap_idx={} leftover={}", delay_idx, tap_idx, self.leftover);
 
         y
     }

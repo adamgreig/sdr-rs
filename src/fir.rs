@@ -105,6 +105,7 @@ pub struct FIR<T: SampleType> {
     tap_idx: isize,
     delay: Vec<T::AccType>,
     delay_idx: isize,
+    leftover: usize,
     decimate: usize,
     interpolate: usize,
 }
@@ -142,7 +143,7 @@ impl <T: SampleType> FIR<T> {
         }
 
         FIR { taps: taps, tap_idx: interpolate as isize - 1isize,
-              delay: delay, delay_idx: 0isize,
+              delay: delay, delay_idx: 0isize, leftover: 0usize,
               decimate: decimate, interpolate: interpolate }
     }
 
@@ -247,35 +248,61 @@ impl <T: SampleType> FIR<T> {
         assert!(self.taps.len() % self.interpolate == 0);
         assert!(self.delay.len() == self.taps.len() / self.interpolate);
         assert!(self.delay_idx < self.delay.len() as isize);
-        assert!(self.tap_idx < (self.taps.len() / self.interpolate) as isize);
-        assert_eq!(x.len() % self.decimate, 0);
+        assert!(self.tap_idx < self.interpolate as isize);
 
-        // Allocate output
-        let mut y: Vec<T> = Vec::with_capacity(
-            (x.len() * self.interpolate) / self.decimate);
-        unsafe { y.set_len((x.len() * self.interpolate) / self.decimate) };
+        // Quit early if we have an empty input
+        if x.len() == 0 {
+            return vec!{};
+        }
 
-        // Grab pointers to various things
+        println!("\nEntering process(), delay_idx={} tap_idx={} leftover={}", self.delay_idx, self.tap_idx, self.leftover);
+
+        // Allocate output.
+        let ylen: usize = ((x.len() * self.interpolate) + self.leftover) /
+                          self.decimate;
+        let mut y: Vec<T> = Vec::with_capacity(ylen);
+        unsafe { y.set_len(ylen) };
+        println!("Allocated {} for y", ylen);
+
+        // y might be 0-length, so can't just grab &y[0].
+        // Instead do this palaver. out_p from the `else` branch won't be used.
+        let mut out_p: *mut T;
+        if ylen > 0 {
+            out_p = &mut y[0] as *mut T;
+        } else {
+            out_p = &mut vec!{x[0]}[0] as *mut T;
+        }
+
+        // Grab pointers to, and local copies of, various things
+        let decimate = self.decimate as isize;
+        let interpolate = self.interpolate as isize;
+        let mut tickstart = self.leftover as isize;
         let mut delay_idx = self.delay_idx;
         let mut tap_idx = self.tap_idx;
         let delay_len = self.delay.len() as isize;
         let delay_p = &mut self.delay[0] as *mut T::AccType;
-        let out_p = &mut y[0] as *mut T;
         let mut in_p = &x[0] as *const T;
-        let ylen = y.len() as isize;
-        let decimate = self.decimate as isize;
-        let interpolate = self.interpolate as isize;
         let tap0 = &self.taps[0] as *const T::TapType;
-        let gain: T::TapType = T::gain(self.interpolate);
+        let gain = T::gain(self.interpolate);
 
-        // Process each actually generated output sample
-        for k in 0..ylen {
+        // Store a pointer to just beyond the end of the input
+        let in_end = unsafe { in_p.offset(x.len() as isize) };
+
+        // Shift input samples into the delay line and compute output samples
+        // off the delay line.
+        'outputs: loop {
 
             // For every high-rate clock tick, advance the polyphase
             // coefficient commutators by one, and when they wrap around,
             // insert a new input into the delay line and advance that by one.
-            // Repeat until a sample we're not going to skip.
-            for _ in 0..decimate {
+            // Repeat until a sample we're not going to skip outputting.
+            println!("About to enter tick loop, tickstart={}", tickstart);
+            for tick in tickstart..decimate {
+                // Only start from self.leftover the very first time.
+                tickstart = 0;
+
+                println!("[tick={}] Main loop, tap_idx={}", tick, tap_idx);
+
                 // Advance coefficient commutators.
                 // Note that the initialised value for tap_idx is
                 // interpolate - 1, so that on the first run we'll reset it
@@ -284,19 +311,30 @@ impl <T: SampleType> FIR<T> {
                 if tap_idx == interpolate {
                     tap_idx = 0;
 
+                    if in_p == in_end {
+                        println!("    Hit last entry, quitting.");
+                        tap_idx = interpolate - 1;
+                        self.leftover = tick as usize;
+                        break 'outputs;
+                    }
+
                     // Insert input sample
+                    println!("      Inserting value in main loop");
                     unsafe {
                         T::input(in_p, delay_p.offset(delay_idx));
                         in_p = in_p.offset(1);
                     }
+
+                    // Manage the circular buffer
                     delay_idx -= 1;
                     if delay_idx == -1 {
                         delay_idx = delay_len - 1;
                     }
+
                 }
             }
 
-            // Compute the multiply-accumulate only for output samples.
+            // Compute the multiply-accumulate
             let mut acc: T::AccType = T::AccType::zero();
             let mut tap_p = unsafe { tap0.offset(tap_idx) };
 
@@ -317,12 +355,18 @@ impl <T: SampleType> FIR<T> {
             }
 
             // Save the result, accounting for filter gain
-            unsafe { T::output(acc, out_p.offset(k), gain); }
+            unsafe {
+                println!("    Saving output");
+                T::output(acc, out_p, gain);
+                out_p = out_p.offset(1);
+            }
         }
 
-        // Update index for next time
+        // Save indices for next time
         self.delay_idx = delay_idx;
         self.tap_idx = tap_idx;
+
+        println!("Leaving process(), delay_idx={} tap_idx={} leftover={}", delay_idx, tap_idx, self.leftover);
 
         y
     }
@@ -337,7 +381,9 @@ impl <T: SampleType> FIR<T> {
 pub fn firwin2(n_taps: usize, gains: &Vec<f64>) -> Vec<f64> {
     assert!(n_taps > 0);
     assert_eq!(gains.len(), 512);
-    assert_eq!(gains[511], 0.0f64);
+    if n_taps % 2 == 0 {
+        assert_eq!(gains[511], 0.0f64);
+    }
 
     // Gather complex gains
     let mut gainsc: Vec<Complex<f64>> =
@@ -511,6 +557,70 @@ mod tests {
         let x: Vec<i16> = vec!{0, 0, 0, 0, 0};
         let y = fir.process(&x);
         assert_eq!(y, vec!{1, 0, 0, 0, 0});
+    }
+
+    #[test]
+    fn test_fir_weird_block_sizes() {
+        let taps: Vec<i32> = vec!{8192, 8192, 8192, 8192};
+        let mut fir = FIR::new(&taps, 2, 1);
+        let y1 = fir.process(&vec!{4i16});
+        let y2 = fir.process(&vec!{4i16, 4, 4});
+        let y3 = fir.process(&vec!{8i16, 8, 8});
+        let y4 = fir.process(&vec!{8i16});
+        assert_eq!(y1, vec!{});
+        assert_eq!(y2, vec!{2, 4});
+        assert_eq!(y3, vec!{6});
+        assert_eq!(y4, vec!{8});
+    }
+
+    #[test]
+    fn test_fir_leftovers() {
+        let taps: Vec<i32> = vec!{8192, 8192, 8192, 8192};
+        let mut fir = FIR::new(&taps, 5, 2);
+
+        // Called with 1 input, should get 2 leftover
+        let y = fir.process(&vec!{1i16});
+        assert_eq!(y, vec!{});
+
+        // Called with 1 input, should get 4 leftover
+        let y = fir.process(&vec!{1i16});
+        assert_eq!(y, vec!{});
+
+        // Called with 1 input, should get 1 output and 1 leftover
+        let y = fir.process(&vec!{1i16});
+        assert_eq!(y, vec!{1});
+
+        // Called with 1 input, should get 3 leftover
+        let y = fir.process(&vec!{1i16});
+        assert_eq!(y, vec!{});
+
+        // Called with 4 inputs, should get two outputs and 1 leftover
+        let y = fir.process(&vec!{1i16, 2, 3, 4});
+        assert_eq!(y, vec!{1, 3});
+
+        // Called with 1 input, should get 3 leftover
+        let y = fir.process(&vec!{1i16});
+        assert_eq!(y, vec!{});
+
+        // Called with 1 input, should get 1 output and 0 leftover
+        let y = fir.process(&vec!{1i16});
+        assert_eq!(y, vec!{1});
+
+        // Called with 1 input, should get 2 leftover
+        let y = fir.process(&vec!{1i16});
+        assert_eq!(y, vec!{});
+
+        // Called with 1 input, should get 4 leftover
+        let y = fir.process(&vec!{1i16});
+        assert_eq!(y, vec!{});
+
+        // Called with 1 input, should get 1 output and 1 leftover
+        let y = fir.process(&vec!{1i16});
+        assert_eq!(y, vec!{1});
+
+        // Called with 2 inputs, should get 1 output and 0 leftover
+        let y = fir.process(&vec!{1i16, 2});
+        assert_eq!(y, vec!{1});
     }
 
     #[test]

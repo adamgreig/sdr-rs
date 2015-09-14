@@ -21,7 +21,7 @@ pub struct FMDemod<T: SampleType> {
 impl <T:SampleType> FMDemod<T> {
     /// Create a new FM demodulator
     pub fn new() -> FMDemod<T> {
-        let mut d: [IQ<T>; 3] = [IQ::new(T::zero(), T::zero()); 3];
+        let d: [IQ<T>; 3] = [IQ::new(T::zero(), T::zero()); 3];
         FMDemod{d: d}
     }
 
@@ -99,7 +99,8 @@ fn test_fm_demod() {
             (0.4*(t as f32)).sin()
         ));
     }
-    let y = fm_demod(&x);
+    let mut demod = FMDemod::new();
+    let y = demod.process(&x);
     let z: Vec<i32> = y.iter().map(|y| (y * 10.0) as i32).collect();
     assert_eq!(z, vec!{
         0, 0,

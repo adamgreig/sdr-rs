@@ -14,4 +14,4 @@ pub mod fir;
 pub use fir::FIR;
 
 pub mod fm;
-pub use fm::fm_demod;
+pub use fm::FMDemod;

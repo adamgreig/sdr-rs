@@ -46,8 +46,8 @@ impl_sampletype!(f64, 1.0);
 /// up to the reference level `r`, multiplying by sub-unity constant `a` to
 /// prevent large shifts.
 ///
-/// This is a fairly simple and slow implementation which not suitable for high
-/// data rates.
+/// This is a fairly simple and slow implementation which is not suitable for
+/// high data rates.
 pub fn agc<T: SampleType>(x: &Vec<T>, a: f32, r: f32) -> f32 {
     let avg = x.iter().fold(0.0_f32, |s, v| s + v.power()) / x.len() as f32;
     let err = 10.0 * r.log10() - 10.0 * avg.log10();

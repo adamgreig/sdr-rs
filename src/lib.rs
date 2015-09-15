@@ -15,3 +15,6 @@ pub use fir::FIR;
 
 pub mod fm;
 pub use fm::FMDemod;
+
+pub mod agc;
+pub use agc::agc;

@@ -4,8 +4,19 @@ use num::Complex;
 pub type IQ<T> = Complex<T>;
 pub type Real<T> = T;
 
+#[macro_export]
+macro_rules! chain_blocks {
+    ($x:ident, $($f:ident),*) => {{
+        let x = $x;
+        $(
+            let x = $f.process(&x);
+        )*
+        x
+    }}
+}
+
 pub mod downconverter;
-pub use downconverter::downconvert_fs_4;
+pub use downconverter::RealFs4Downconverter;
 
 pub mod cic;
 pub use cic::CIC;

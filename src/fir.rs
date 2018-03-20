@@ -1,5 +1,6 @@
 use num::{Num, NumCast, Zero, Complex};
 use std::f64::consts::PI;
+use std::f64;
 
 /// Implement the underlying operations and types required by the FIR.
 ///
@@ -235,6 +236,83 @@ impl <T: SampleType> FIR<T> {
         FIR::from_gains(n_taps, &gains, decimate, interpolate)
     }
 
+    /// Create a new FIR low pass filter with specified cutoff frequency (in
+    /// normalised frequency, e.g. in the range 0.0 to 0.5).
+    pub fn lowpass(n_taps: usize, cutoff: f64) -> FIR<T>
+    {
+        let fc = (512.0 * 2.0 * cutoff) as usize;
+        let mut gains: Vec<f64> = Vec::with_capacity(512);
+        for _ in 0..fc {
+            gains.push(1.0);
+        }
+        for _ in fc..512 {
+            gains.push(0.0);
+        }
+        FIR::from_gains(n_taps, &gains, 1, 1)
+    }
+
+    /// Create a new FIR high pass filter with specified cutoff frequency (in
+    /// normalised frequency, e.g. in the range 0.0 to 0.5).
+    pub fn highpass(n_taps: usize, cutoff: f64) -> FIR<T>
+    {
+        // Must have an odd number of taps for a high pass filter
+        assert_eq!(n_taps % 2, 1);
+
+        let fc = (512.0 * 2.0 * cutoff) as usize;
+        let mut gains: Vec<f64> = Vec::with_capacity(512);
+        for _ in 0..fc {
+            gains.push(0.0);
+        }
+        for _ in fc..512 {
+            gains.push(1.0);
+        }
+        FIR::from_gains(n_taps, &gains, 1, 1)
+    }
+
+    /// Create a new FIR band pass filter with specified passband frequencies
+    /// (in normalised frequency, e.g. in the range 0.0 to 0.5).
+    pub fn bandpass(n_taps: usize, f_low: f64, f_high: f64) -> FIR<T>
+    {
+        // Band must be well defined
+        assert!(f_low < f_high);
+        let fl = (512.0 * 2.0 * f_low) as usize;
+        let fh = (512.0 * 2.0 * f_high) as usize;
+        let mut gains: Vec<f64> = Vec::with_capacity(512);
+        for _ in 0..fl {
+            gains.push(0.0);
+        }
+        for _ in fl..fh {
+            gains.push(1.0);
+        }
+        for _ in fh..512 {
+            gains.push(0.0);
+        }
+        FIR::from_gains(n_taps, &gains, 1, 1)
+    }
+
+    /// Create a new FIR band stop filter with specified stopband frequencies
+    /// (in normalised frequency, e.g. in the range 0.0 to 0.5).
+    pub fn bandstop(n_taps: usize, f_low: f64, f_high: f64) -> FIR<T>
+    {
+        // Must have an odd number of taps for a high pass filter
+        assert_eq!(n_taps % 2, 1);
+        // Band must be well defined
+        assert!(f_low < f_high);
+        let fl = (512.0 * 2.0 * f_low) as usize;
+        let fh = (512.0 * 2.0 * f_high) as usize;
+        let mut gains: Vec<f64> = Vec::with_capacity(512);
+        for _ in 0..fl {
+            gains.push(1.0);
+        }
+        for _ in fl..fh {
+            gains.push(0.0);
+        }
+        for _ in fh..512 {
+            gains.push(1.0);
+        }
+        FIR::from_gains(n_taps, &gains, 1, 1)
+    }
+
     /// Return a reference to the filter's taps.
     pub fn taps(&self) -> &Vec<T::TapType> {
         &self.taps
@@ -394,11 +472,12 @@ pub fn firwin2(n_taps: usize, gains: &Vec<f64>) -> Vec<f64> {
     taps.iter().zip(w.iter()).map(|(t, w)| t * w).collect()
 }
 
-/// Quantise FIR taps to i16 taps that sum to `total`
+/// Quantise FIR taps to taps that sum to, and are at most, `total`.
 pub fn quantise_taps<T: Num + NumCast>(taps: &Vec<f64>, total: T) -> Vec<T> {
     let sum: f64 = taps.iter().fold(0.0_f64, |acc, &x| acc + x);
     let total: f64 = <f64 as NumCast>::from(total).unwrap();
-    taps.iter().map(|t| <T as NumCast>::from(t * total / sum).unwrap()).collect()
+    taps.iter().map(|t| <T as NumCast>::from(t * (total/sum))
+                                            .unwrap()).collect()
 }
 
 /// Compute the Hamming window over n samples
@@ -641,6 +720,40 @@ mod tests {
         let y = fir.process(&x);
         assert_eq!(y, vec!{
             0, 0, 0, 0, 4, 7, 10, 14, 17, 20, 24, 27, 30, 34, 38, 40, 40, 39});
+    }
+
+    #[test]
+    fn test_fir_lowpass() {
+        // Pass a DC signal
+        let mut fir = FIR::<i16>::lowpass(4, 0.1);
+        let x = vec!{2, 2, 2, 2, 2, 2, 2, 2};
+        let y = fir.process(&x);
+        assert_eq!(y, vec!{0, 1, 1, 1, 1, 1, 1, 1});
+
+        // Block a high frequency signal
+        let mut fir = FIR::<i16>::lowpass(4, 0.1);
+        let x = vec!{2, -2, 2, -2, 2, -2, 2, -2};
+        let y = fir.process(&x);
+        assert_eq!(y, vec!{0, 0, 0, 0, 0, 0, 0, 0});
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fir_highpass() {
+        // Ignored at the moment because the firwin high-pass filters have a high pass shape
+        // but don't really block DC as such. To investigate later.
+
+        // Block a DC signal
+        let mut fir = FIR::<i16>::highpass(7, 0.1);
+        let x = vec![2; 128];
+        let y = fir.process(&x);
+        assert_eq!(y, vec!{0, 0, 0, 0, 0, 0, 0, 0});
+
+        // Pass a high frequency signal
+        let mut fir = FIR::<i16>::highpass(3, 0.25);
+        let x = vec!{2, -2, 2, -2, 2, -2, 2, -2};
+        let y = fir.process(&x);
+        assert_eq!(y, vec!{2, -2, 2, -2, 2, -2, 2, -2});
     }
 
     #[test]

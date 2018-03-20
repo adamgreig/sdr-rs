@@ -74,6 +74,7 @@ impl_floating_sampletype!(f32);
 impl_floating_sampletype!(f64);
 
 /// FM signal demodulator
+#[derive(Default)]
 pub struct FMDemod<T: SampleType> {
     d: [IQ<T::Reg>; 3]
 }
@@ -82,12 +83,12 @@ impl <T:SampleType> FMDemod<T> {
     /// Create a new FM demodulator
     pub fn new() -> FMDemod<T> {
         let d: [IQ<T::Reg>; 3] = [IQ::new(T::Reg::zero(), T::Reg::zero()); 3];
-        FMDemod{d: d}
+        FMDemod{d }
     }
 
     /// FM demodulate input block x, containing baseband IQ data that has been
     /// frequency modulated. Outputs a block of real-valued samples.
-    pub fn process(&mut self, x: &Vec<IQ<T>>) -> Vec<T> {
+    pub fn process(&mut self, x: &[IQ<T>]) -> Vec<T> {
         let n = x.len();
         let mut d = self.d;
 

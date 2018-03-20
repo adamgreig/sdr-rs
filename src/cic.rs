@@ -11,7 +11,7 @@ pub trait SampleType: Copy {
     fn from_out(out: Self::RegType, gain_shift: usize) -> Self;
 }
 
-/// Implement SampleType for scalars like i16.
+/// Implement `SampleType` for scalars like i16.
 /// $t is the sample type, $tt the register type,
 /// $bw_t the bit width of type t, and $bw_tt the bit width of $tt.
 macro_rules! impl_scalar_sampletype {
@@ -41,7 +41,7 @@ macro_rules! impl_scalar_sampletype {
     }
 }
 
-/// Implement SampleType for complex samples like Complex<i16>.
+/// Implement `SampleType` for complex samples like `Complex<i16>`.
 /// $t is the sample type, $tt the register type,
 /// $bw_t the bit width of type t, and $bw_tt the bit width of $tt.
 macro_rules! impl_complex_sampletype {
@@ -124,12 +124,12 @@ impl <T: SampleType> CIC<T> {
         // Compute the filter gain, Q**R, as an equivalent bit shift
         let gain_shift: usize = (q as f32 * (r as f32).log2()).ceil() as usize;
 
-        CIC { q: q, r: r, intg: intg, comb: comb, gain_shift: gain_shift }
+        CIC { q, r, intg, comb, gain_shift }
     }
 
     /// Run the CIC filter over a block x,
     /// returning the filtered and decimated output.
-    pub fn process(&mut self, x: &Vec<T>) -> Vec<T> {
+    pub fn process(&mut self, x: &[T]) -> Vec<T> {
         // Check we were initialised correctly
         assert!(self.q > 0 && self.r > 0);
         assert_eq!(self.intg.len(), self.q);

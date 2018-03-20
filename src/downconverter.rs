@@ -9,18 +9,19 @@ use super::IQ;
 /// antialias and then decimate by at least 2 afterwards.
 ///
 /// Input block length must be a multiple of 4 for this process.
+#[derive(Default)]
 pub struct RealFs4Downconverter;
 impl RealFs4Downconverter {
     pub fn new() -> RealFs4Downconverter {
         RealFs4Downconverter
     }
 
-    pub fn process(&self, x: &Vec<u16>) -> Vec<IQ<i16>> {
+    pub fn process(&self, x: &[u16]) -> Vec<IQ<i16>> {
         let n = x.len();
         assert_eq!(n % 4, 0);
 
         // Cast input to i16 (we'll clear the sign bit in the loop, in case)
-        let x: &Vec<i16> = unsafe { transmute(x) };
+        let x: &[i16] = unsafe { transmute(x) };
 
         // Allocate output
         let mut y: Vec<IQ<i16>> = Vec::with_capacity(n);

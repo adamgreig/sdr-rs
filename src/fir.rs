@@ -4,9 +4,9 @@ use std::f64;
 
 /// Implement the underlying operations and types required by the FIR.
 ///
-/// In general the AccType should be larger than the SampleType but compatible
-/// (i.e. you can add a SampleType to an AccType), while the TapType should
-/// always be scalar and is usually the same size as the AccType.
+/// In general the `AccType` should be larger than the `SampleType` but compatible
+/// (i.e. you can add a `SampleType` to an `AccType`), while the `TapType` should
+/// always be scalar and is usually the same size as the `AccType`.
 ///
 /// gain() specifies the gain of the filter, i.e. the sum of all the taps,
 /// divided by the interpolation level L.
@@ -23,7 +23,7 @@ pub trait SampleType: Copy {
     unsafe fn output(acc: Self::AccType, out: *mut Self, gain: Self::TapType);
 }
 
-/// Implement SampleType for a scalar type such as i16 or f32.
+/// Implement `SampleType` for a scalar type such as i16 or f32.
 /// $t is the sample type, $tt the acc/tap type and $tapsum the filter gain.
 macro_rules! impl_scalar_sampletype {
     ($t:ty, $tt:ty, $tapsum:expr) => {
@@ -53,7 +53,7 @@ macro_rules! impl_scalar_sampletype {
     }
 }
 
-/// Implement SampleType for a Complex type such as Complex<i16>.
+/// Implement `SampleType` for a Complex type such as Complex<i16>.
 /// $t is the sample type, $tt the acc/tap type and $tapsum the filter gain.
 macro_rules! impl_complex_sampletype {
     ($t:ty, $tt:ty, $tapsum:expr) => {
@@ -87,7 +87,7 @@ macro_rules! impl_complex_sampletype {
     }
 }
 
-/// Implement Scalar and Complex SampleTypes for the same underlying types.
+/// Implement Scalar and Complex `SampleTypes` for the same underlying types.
 macro_rules! impl_sampletype {
     ($t:ty, $tt:ty, $tapsum:expr) => {
         impl_scalar_sampletype!($t, $tt, $tapsum);
@@ -123,10 +123,10 @@ impl <T: SampleType> FIR<T> {
     ///
     /// Implements a polyphase FIR to do efficient decimation and interpolation
     /// (identical to a standard FIR when interpolate=1).
-    pub fn new(taps: &Vec<T::TapType>, decimate: usize, interpolate: usize)
+    pub fn new(taps: &[T::TapType], decimate: usize, interpolate: usize)
         -> FIR<T>
     {
-        assert!(taps.len() > 0);
+        assert!(!taps.is_empty());
 
         // Copy the taps and zero-pad to get a multiple of interpolation ratio
         let mut taps: Vec<T::TapType> = taps.to_owned();
@@ -143,9 +143,9 @@ impl <T: SampleType> FIR<T> {
             delay.push(T::AccType::zero());
         }
 
-        FIR { taps: taps, tap_idx: interpolate as isize - 1isize,
-              delay: delay, delay_idx: 0isize, leftover: 0usize,
-              decimate: decimate, interpolate: interpolate }
+        FIR { taps, tap_idx: interpolate as isize - 1isize,
+              delay, delay_idx: 0isize, leftover: 0usize,
+              decimate, interpolate }
     }
 
     /// Create a new FIR from a number of taps, desired frequency response
@@ -153,7 +153,7 @@ impl <T: SampleType> FIR<T> {
     ///
     /// Set decimate=1 for no decimation, decimate=2 for /2, etc.
     /// Set interpolate=1 for no interpolation, interplate=2 for *2, etc.
-    pub fn from_gains(n_taps: usize, gains: &Vec<f64>,
+    pub fn from_gains(n_taps: usize, gains: &[f64],
                       decimate: usize, interpolate: usize)
         -> FIR<T>
     {
@@ -320,7 +320,7 @@ impl <T: SampleType> FIR<T> {
 
     /// Process a block of data x, outputting the filtered and possibly
     /// decimated data.
-    pub fn process(&mut self, x: &Vec<T>) -> Vec<T> {
+    pub fn process(&mut self, x: &[T]) -> Vec<T> {
         // Check we were initialised correctly and
         // ensure invariances required for unsafe code.
         assert!(self.taps.len() % self.interpolate == 0);
@@ -329,8 +329,8 @@ impl <T: SampleType> FIR<T> {
         assert!(self.tap_idx < self.interpolate as isize);
 
         // Quit early if we have an empty input
-        if x.len() == 0 {
-            return vec!{};
+        if x.is_empty() {
+            return Vec::new();
         }
 
         // Allocate output.
@@ -341,12 +341,12 @@ impl <T: SampleType> FIR<T> {
 
         // y might be 0-length, so can't just grab &y[0].
         // Instead do this palaver. out_p from the `else` branch won't be used.
-        let mut out_p: *mut T;
+        let mut out_p: *mut T =
         if ylen > 0 {
-            out_p = &mut y[0] as *mut T;
+            &mut y[0] as *mut T
         } else {
-            out_p = &mut vec!{x[0]}[0] as *mut T;
-        }
+            &mut vec!{x[0]}[0] as *mut T
+        };
 
         // Grab pointers to, and local copies of, various things
         let decimate = self.decimate as isize;
@@ -442,10 +442,10 @@ impl <T: SampleType> FIR<T> {
 
 /// Design an FIR filter using the window method.
 ///
-/// n_taps: the number of taps to return
-/// gains: desired frequency response evalulated on a 512-point grid between
+/// `n_taps`: the number of taps to return
+/// `gains`: desired frequency response evalulated on a 512-point grid between
 ///        zero and the Nyquist frequency
-pub fn firwin2(n_taps: usize, gains: &Vec<f64>) -> Vec<f64> {
+pub fn firwin2(n_taps: usize, gains: &[f64]) -> Vec<f64> {
     assert!(n_taps > 0);
     assert_eq!(gains.len(), 512);
     if n_taps % 2 == 0 {
@@ -473,7 +473,7 @@ pub fn firwin2(n_taps: usize, gains: &Vec<f64>) -> Vec<f64> {
 }
 
 /// Quantise FIR taps to taps that sum to, and are at most, `total`.
-pub fn quantise_taps<T: Num + NumCast>(taps: &Vec<f64>, total: T) -> Vec<T> {
+pub fn quantise_taps<T: Num + NumCast>(taps: &[f64], total: T) -> Vec<T> {
     let sum: f64 = taps.iter().fold(0.0_f64, |acc, &x| acc + x);
     let total: f64 = <f64 as NumCast>::from(total).unwrap();
     taps.iter().map(|t| <T as NumCast>::from(t * (total/sum))
@@ -488,14 +488,14 @@ fn hamming(n: usize) -> Vec<f64> {
 
 /// Compute the DFT of x.
 #[allow(non_snake_case)]
-fn dft(x: &Vec<Complex<f64>>) -> Vec<Complex<f64>> {
+fn dft(x: &[Complex<f64>]) -> Vec<Complex<f64>> {
     let N = x.len();
     let mut out: Vec<Complex<f64>> = Vec::with_capacity(N);
     for k in 0..N {
         out.push(Complex::new(0.0, 0.0));
         for n in 0..N {
             let f = 2.0 * PI * (k as f64) * (n as f64) / (N as f64);
-            out[k] = out[k] + x[n] * Complex::new(f.cos(), -f.sin());
+            out[k] += x[n] * Complex::new(f.cos(), -f.sin());
         }
     }
     out
@@ -505,16 +505,16 @@ fn dft(x: &Vec<Complex<f64>>) -> Vec<Complex<f64>> {
 ///
 /// IDFT(x) = conj(DFT(conj(x))) / N
 #[allow(non_snake_case)]
-fn idft(x: &Vec<Complex<f64>>) -> Vec<Complex<f64>> {
+fn idft(x: &[Complex<f64>]) -> Vec<Complex<f64>> {
     let N = x.len();
-    let x = x.iter().map(|x| x.conj()).collect();
+    let x: Vec<Complex<f64>> = x.iter().map(|x| x.conj()).collect();
     let y = dft(&x);
-    y.iter().map(|y| y.conj().unscale(N as f64)).collect()
+    y.into_iter().map(|y| y.conj().unscale(N as f64)).collect()
 }
 
 /// Compute the IRDFT of x.
 #[allow(non_snake_case)]
-fn irdft(x: &Vec<Complex<f64>>) -> Vec<f64> {
+fn irdft(x: &[Complex<f64>]) -> Vec<f64> {
     let No2p1 = x.len();
     let No2 = No2p1 - 1;
     let mut xc = x.to_owned();
